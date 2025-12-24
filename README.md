@@ -4,6 +4,11 @@
 
 A simple 3D ray tracing renderer built with Python and Pygame.
 
+<p align="center">
+  <img src="img/example_1.png" width="30%" />
+  <img src="img/example_2.png" width="30%" />
+</p>
+
 ### Features
 
 - Forward ray tracing with sphere primitives
@@ -71,6 +76,11 @@ The renderer implements physically-based color mixing where the final color is t
 ## Işın İzleme Demo
 
 Python ve Pygame ile hazırlanmış basit bir 3B ışın izleme (ray tracing) render motoru.
+
+<p align="center">
+  <img src="img/example_1.png" width="30%" />
+  <img src="img/example_2.png" width="30%" />
+</p>
 
 ### Özellikler
 
