@@ -61,17 +61,19 @@ class DemoViewer:
         return tuple(min(255,int(c*255)) for c in color)
 
     def render(self):
+        # Pre-compute ALL ray directions for the full image in one vectorized
+        # NumPy call. ray_dirs has shape (H, W, 3) — one normalized direction
+        # per pixel. This replaces H*W individual get_ray() calls.
+        ray_dirs = self.camera.get_rays_vectorized(self.w, self.h)
+
         for y in range(self.h):
             for x in range(self.w):
-                #dx = (x - self.w/2)
-                #dy = (y - self.h/2)
-                #dz = 1
-                #dir = Vec3(dx, dy, dz).normalize()
-                #ray_dir = self.camera.get_ray(x, y, self.w, self.h)
-                ray_dir = self.camera.get_ray(x, y, self.w, self.h)
+                # Look up the pre-computed direction for this pixel.
+                # ray_dirs[y, x] is a numpy array of shape (3,).
+                d = ray_dirs[y, x]
+                ray_dir = Vec3(d[0], d[1], d[2])
                 ray = Ray(self.camera.position, ray_dir)
-                #ray = Ray(self.camera, dir)
-                self.screen.set_at((x,y), self.trace(ray))
+                self.screen.set_at((x, y), self.trace(ray))
             pygame.display.flip()
 
     def run(self):
