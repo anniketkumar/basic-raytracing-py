@@ -1,9 +1,12 @@
 import pygame
+import numpy as np
 from core.camera import Camera
 from core.vec3 import Vec3
 from core.ray import Ray
 from core.sphere import Sphere
 from core.light import Light
+from core.intersection import intersect_spheres, sphere_to_dict
+from core.shading import shade_diffuse, light_to_dict
 #import math
 #import random
 
@@ -34,6 +37,11 @@ class DemoViewer:
         self.lights.append(Light(pos, intensity, color))
 
     def trace(self, ray, depth=0):
+        """Trace a single ray against the scene (legacy per-pixel path).
+
+        Kept for debugging and reference.  The main render loop now uses
+        the fully vectorized pipeline in render() instead.
+        """
         closest = None
         min_t = float('inf')
         for s in self.shapes:
@@ -61,20 +69,50 @@ class DemoViewer:
         return tuple(min(255,int(c*255)) for c in color)
 
     def render(self):
-        # Pre-compute ALL ray directions for the full image in one vectorized
-        # NumPy call. ray_dirs has shape (H, W, 3) — one normalized direction
-        # per pixel. This replaces H*W individual get_ray() calls.
-        ray_dirs = self.camera.get_rays_vectorized(self.w, self.h)
+        """Render the full scene using the vectorized pipeline.
 
-        for y in range(self.h):
-            for x in range(self.w):
-                # Look up the pre-computed direction for this pixel.
-                # ray_dirs[y, x] is a numpy array of shape (3,).
-                d = ray_dirs[y, x]
-                ray_dir = Vec3(d[0], d[1], d[2])
-                ray = Ray(self.camera.position, ray_dir)
-                self.screen.set_at((x, y), self.trace(ray))
+        End-to-end flow with zero Python-level pixel loops:
+            1. Week 1 — vectorized ray direction generation  -> (H, W, 3)
+            2. Week 2 — vectorized sphere intersection       -> t, idx, normals, hits
+            3. Week 3 — vectorized Lambertian diffuse shading -> (H, W, 3) uint8
+            4. Blit the entire image to the pygame surface in one call.
+        """
+        H, W = self.h, self.w
+
+        # Guard: empty scene -> black screen
+        if not self.shapes:
+            self.screen.fill((0, 0, 0))
             pygame.display.flip()
+            return
+
+        # --- Week 1: vectorized ray directions ----------------------------
+        ray_dirs = self.camera.get_rays_vectorized(W, H)        # (H, W, 3)
+
+        # Build (H, W, 3) ray origins by broadcasting the camera position
+        cam_pos = np.array([self.camera.position.x,
+                            self.camera.position.y,
+                            self.camera.position.z], dtype=np.float64)
+        ray_origins = np.broadcast_to(cam_pos, ray_dirs.shape).copy()
+
+        # Convert scene objects to dict format for the vectorized kernels
+        sphere_dicts = [sphere_to_dict(s) for s in self.shapes]
+        light_dicts  = [light_to_dict(l)  for l in self.lights]
+
+        # --- Week 2: vectorized intersection ------------------------------
+        t_min, idx, normals, hit_points = intersect_spheres(
+            ray_origins, ray_dirs, sphere_dicts
+        )
+
+        # --- Week 3: vectorized shading -----------------------------------
+        image = shade_diffuse(
+            hit_points, normals, idx, t_min, sphere_dicts, light_dicts
+        )
+
+        # --- Blit to screen -----------------------------------------------
+        # pygame.surfarray expects shape (W, H, 3) — axes transposed from
+        # our (H, W, 3) image layout.
+        pygame.surfarray.blit_array(self.screen, image.transpose(1, 0, 2))
+        pygame.display.flip()
 
     def run(self):
         while self.running:
