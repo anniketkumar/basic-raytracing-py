@@ -40,13 +40,17 @@ def sphere_to_dict(sphere):
 
     Args:
         sphere: A Sphere instance with .position (Vec3), .radius (float),
-                and .color (tuple).
+                .color (tuple), and Blinn-Phong material properties.
 
     Returns:
         dict with keys:
-            'center': np.ndarray of shape (3,)
-            'radius': float
-            'color':  tuple (R, G, B) in 0–255
+            'center':    np.ndarray of shape (3,)
+            'radius':    float
+            'color':     tuple (R, G, B) in 0–255
+            'ambient':   float — ambient reflection coefficient
+            'diffuse':   float — diffuse reflection coefficient
+            'specular':  float — specular reflection coefficient
+            'shininess': float — specular exponent (higher = tighter highlight)
     """
     return {
         "center": np.array([sphere.position.x,
@@ -54,6 +58,10 @@ def sphere_to_dict(sphere):
                             sphere.position.z], dtype=np.float64),
         "radius": float(sphere.radius),
         "color": sphere.color,
+        "ambient": float(getattr(sphere, 'ambient', 0.1)),
+        "diffuse": float(getattr(sphere, 'diffuse', 0.7)),
+        "specular": float(getattr(sphere, 'specular', 0.5)),
+        "shininess": float(getattr(sphere, 'shininess', 32)),
     }
 
 

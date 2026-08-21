@@ -1,26 +1,26 @@
-"""Vectorized Lambertian diffuse shading kernel (Week 3).
+"""Vectorized Blinn-Phong shading kernel (Week 4).
 
-Given the (H, W, 3) hit points, normals, and per-pixel sphere indices from
-the Week 2 intersection kernel, this module computes per-pixel Lambertian
-diffuse lighting from all scene lights in one batched pass — including
-vectorized shadow rays.
+Upgrades the Week 3 Lambertian diffuse-only shading to the full Blinn-Phong
+lighting model with per-sphere material properties:
 
-Broadcasting overview for shading
----------------------------------
-Each light contributes illumination to every hit pixel.  The key operations:
+    final = ambient + Σ_lights ( diffuse_term + specular_term )
 
-    light_pos:       (3,)         — single light position
-    hit_points:      (H, W, 3)   — per-pixel hit locations
+    ambient_term  = ambient_coeff * sphere_color
+    diffuse_term  = sphere_color * light_color * NdotL * diffuse_coeff * intensity
+    specular_term = light_color * (NdotH ** shininess) * specular_coeff * intensity
 
-    light_vec = light_pos - hit_points    — broadcasts (3,) against (H, W, 3)
-    NdotL = sum(normals * light_dir, -1)  — contracts xyz -> (H, W) scalars
-    contribution = color * NdotL[..., None] — (H, W, 1) broadcasts to (H, W, 3)
+The Blinn-Phong half-vector  H = normalize(L + V)  is cheaper than computing
+the reflection vector and gives nearly identical results.
 
-Shadow rays reuse the Week 2 single-sphere intersection kernel:  shadow
-origins and directions are (H, W, 3) arrays fed directly to
-_intersect_single_sphere.  Self-sphere exclusion is handled per-pixel by
-building a (num_spheres, H, W) boolean mask where ``sphere_index == i`` and
-setting those shadow-t entries to inf before taking the minimum.
+Broadcasting overview for the new terms
+---------------------------------------
+    view_dir:    normalize(ray_origins - hit_points)     → (H, W, 3)
+    half_vec:    normalize(light_dir + view_dir)         → (H, W, 3)
+    NdotH:       max(dot(normals, half_vec), 0)          → (H, W)
+    specular:    NdotH ** shininess * specular_coeff     → (H, W)
+
+Material coefficients are gathered per-pixel using the same
+``mask = (hit_sphere_idx == i)`` pattern used for sphere colours in Week 3.
 
 Dependencies: NumPy only (no new packages).
 """
@@ -35,7 +35,7 @@ from core.intersection import _intersect_single_sphere
 # ---------------------------------------------------------------------------
 
 def light_to_dict(light):
-    """Convert a core.light.Light object to the dict format used by shade_diffuse.
+    """Convert a core.light.Light object to the dict format used by shading.
 
     Args:
         light: A Light instance with .position (Vec3), .intensity (float),
@@ -60,21 +60,17 @@ def light_to_dict(light):
 # Public API
 # ---------------------------------------------------------------------------
 
-def shade_diffuse(hit_points, normals, hit_sphere_idx, t_min, spheres, lights):
-    """Compute Lambertian diffuse shading for all pixels simultaneously.
+def shade_blinn_phong(hit_points, normals, hit_sphere_idx, t_min,
+                      spheres, lights, ray_origins=None):
+    """Compute Blinn-Phong shading (ambient + diffuse + specular) for all pixels.
 
-    This function replaces the per-pixel colour accumulation loop in
-    DemoViewer.trace().  For each light in the scene it:
-        1. Computes light-direction vectors for all (H, W) hit points
-        2. Evaluates the Lambert cosine term  max(N . L, 0)
-        3. Fires vectorized shadow rays (reusing the Week 2 kernel)
-        4. Accumulates  sphere_color * light_color * NdotL * intensity
+    This function extends the Week 3 Lambertian diffuse shading with:
+        - Per-sphere ambient illumination (prevents pure-black shadows)
+        - Specular highlights via the Blinn-Phong half-vector method
+        - Per-sphere material properties (ambient, diffuse, specular, shininess)
 
-    The colour math exactly mirrors the scalar trace() implementation::
-
-        diff = max(normal.dot(ldir), 0) * light.intensity
-        color[i] += (s.color[i] / 255) * (light.color[i] / 255) * diff
-        final = min(255, int(color_float * 255))
+    If ``ray_origins`` is None, specular highlights are skipped and the result
+    is equivalent to the original shade_diffuse (used for backward compat).
 
     Args:
         hit_points:     np.ndarray (H, W, 3) — world-space hit positions.
@@ -84,9 +80,12 @@ def shade_diffuse(hit_points, normals, hit_sphere_idx, t_min, spheres, lights):
         t_min:          np.ndarray (H, W)    — primary-ray hit distance
                         (np.inf for misses).
         spheres:        list[dict] — sphere dicts with keys ``center`` (3,),
-                        ``radius`` (float), ``color`` (tuple).
+                        ``radius`` (float), ``color`` (tuple), ``ambient``,
+                        ``diffuse``, ``specular``, ``shininess``.
         lights:         list[dict] — light dicts with keys ``position`` (3,),
                         ``intensity`` (float), ``color`` (tuple).
+        ray_origins:    np.ndarray (H, W, 3) or None — ray origin positions.
+                        Required for specular; if None, specular is disabled.
 
     Returns:
         image: np.ndarray (H, W, 3), dtype uint8 — final RGB pixel values,
@@ -94,9 +93,16 @@ def shade_diffuse(hit_points, normals, hit_sphere_idx, t_min, spheres, lights):
 
     Shape trace:
         sphere_colors   (H, W, 3)   per-pixel object colour, float [0, 1]
-        light_vec       (H, W, 3)   unnormalised hit->light vector
+        ambient_coeff   (H, W)      per-pixel ambient material coefficient
+        diffuse_coeff   (H, W)      per-pixel diffuse material coefficient
+        specular_coeff  (H, W)      per-pixel specular material coefficient
+        shininess       (H, W)      per-pixel specular exponent
+        light_vec       (H, W, 3)   unnormalised hit→light vector
         light_dir       (H, W, 3)   normalised light direction
         NdotL           (H, W)      Lambert cosine term, clamped >= 0
+        view_dir        (H, W, 3)   normalised camera→hit direction (reversed)
+        half_vec        (H, W, 3)   normalised bisector of L and V
+        NdotH           (H, W)      specular cosine term, clamped >= 0
         shadow_origins  (H, W, 3)   offset hit points for shadow rays
         all_shadow_t    (N, H, W)   per-sphere shadow-ray t values
         self_mask       (N, H, W)   True where sphere i is the hit sphere
@@ -109,27 +115,54 @@ def shade_diffuse(hit_points, normals, hit_sphere_idx, t_min, spheres, lights):
     H, W = hit_sphere_idx.shape
     num_spheres = len(spheres)
 
-    # Early exit: no geometry or no lights -> black image
-    if num_spheres == 0 or len(lights) == 0:
+    # Early exit: no geometry → black image.
+    # Note: unlike Week 3, we DON'T early-exit on no lights because ambient
+    # illumination doesn't require any light sources.
+    if num_spheres == 0:
         return np.zeros((H, W, 3), dtype=np.uint8)
 
     # ------------------------------------------------------------------
-    # 1. Build per-pixel sphere colour  (H, W, 3), float in [0, 1]
+    # 1. Build per-pixel sphere colour and material properties
     #
     #    For each sphere index i, wherever hit_sphere_idx == i, assign
-    #    that sphere's colour normalised to [0, 1].  Miss pixels remain
-    #    at zero (black).
+    #    that sphere's colour and material coefficients.  Miss pixels
+    #    remain at zero (black / no contribution).
     # ------------------------------------------------------------------
-    sphere_colors = np.zeros((H, W, 3), dtype=np.float64)
+    sphere_colors  = np.zeros((H, W, 3), dtype=np.float64)
+    ambient_coeff  = np.zeros((H, W),    dtype=np.float64)
+    diffuse_coeff  = np.zeros((H, W),    dtype=np.float64)
+    specular_coeff = np.zeros((H, W),    dtype=np.float64)
+    shininess      = np.ones((H, W),     dtype=np.float64)  # default 1 to avoid 0**0
+
     for i, s in enumerate(spheres):
         mask = (hit_sphere_idx == i)                            # (H, W) bool
         if not np.any(mask):
             continue
         color_01 = np.array(s["color"], dtype=np.float64) / 255.0  # (3,)
-        sphere_colors[mask] = color_01
+        sphere_colors[mask]  = color_01
+        ambient_coeff[mask]  = s.get("ambient",  0.1)
+        diffuse_coeff[mask]  = s.get("diffuse",  0.7)
+        specular_coeff[mask] = s.get("specular", 0.5)
+        shininess[mask]      = s.get("shininess", 32)
 
     # Miss mask — pixels that didn't hit any sphere
     miss_mask = (hit_sphere_idx == -1)                          # (H, W)
+
+    # ------------------------------------------------------------------
+    # 2. Ambient term  (computed once, outside the light loop)
+    #    ambient_color = ambient_coeff * sphere_color
+    # ------------------------------------------------------------------
+    ambient_color = sphere_colors * ambient_coeff[..., np.newaxis]  # (H, W, 3)
+
+    # ------------------------------------------------------------------
+    # 3. Compute view direction for specular (if ray_origins provided)
+    # ------------------------------------------------------------------
+    compute_specular = (ray_origins is not None)
+    if compute_specular:
+        view_vec = ray_origins - hit_points                      # (H, W, 3)
+        view_dist = np.linalg.norm(view_vec, axis=-1,
+                                   keepdims=True)                # (H, W, 1)
+        view_dir = view_vec / np.maximum(view_dist, 1e-10)      # (H, W, 3)
 
     # Pre-compute sphere-index comparison array for self-exclusion.
     # sphere_indices[i, :, :] == i, compared against hit_sphere_idx via
@@ -137,9 +170,14 @@ def shade_diffuse(hit_points, normals, hit_sphere_idx, t_min, spheres, lights):
     sphere_indices = np.arange(num_spheres).reshape(num_spheres, 1, 1)
 
     # ------------------------------------------------------------------
-    # 2. Per-light diffuse accumulation
+    # 4. Per-light diffuse + specular accumulation
     # ------------------------------------------------------------------
     accumulated = np.zeros((H, W, 3), dtype=np.float64)
+
+    if len(lights) == 0:
+        # No lights → only ambient contributes
+        image = np.clip(ambient_color * 255.0, 0.0, 255.0).astype(np.uint8)
+        return image
 
     for light in lights:
         light_pos       = light["position"]                     # (3,)
@@ -185,31 +223,71 @@ def shade_diffuse(hit_points, normals, hit_sphere_idx, t_min, spheres, lights):
         shadow_t_min = np.min(all_shadow_t, axis=0)             # (H, W)
         shadow_blocked = (shadow_t_min < np.inf)                # (H, W)
 
-        # Zero out NdotL where light is blocked or pixel is a miss
-        NdotL = np.where(shadow_blocked | miss_mask, 0.0, NdotL)
+        # Zero out terms where light is blocked or pixel is a miss
+        visible = ~(shadow_blocked | miss_mask)                 # (H, W)
+        NdotL_masked = np.where(visible, NdotL, 0.0)           # (H, W)
 
-        # --- Colour contribution ------------------------------------------
-        # Mirrors the scalar formula:
-        #   color[c] += (s.color[c]/255) * (l.color[c]/255) * NdotL * intensity
-        #
-        # Broadcasting:
-        #   (H,W,3) * (3,) -> (H,W,3)   [sphere_colors * light_color_01]
-        #   (H,W,3) * (H,W,1) -> (H,W,3) [... * NdotL[..., None]]
-        #   (H,W,3) * scalar -> (H,W,3)  [... * light_intensity]
-        contribution = (
+        # --- Diffuse contribution -----------------------------------------
+        # sphere_color * light_color * NdotL * diffuse_coeff * intensity
+        diffuse_contrib = (
             sphere_colors
             * light_color_01
-            * NdotL[..., np.newaxis]
+            * (NdotL_masked * diffuse_coeff)[..., np.newaxis]
             * light_intensity
         )                                                       # (H, W, 3)
-        accumulated += contribution
+
+        # --- Specular contribution ----------------------------------------
+        if compute_specular:
+            # Half vector: H = normalize(L + V)
+            half_vec = light_dir + view_dir                     # (H, W, 3)
+            half_dist = np.linalg.norm(half_vec, axis=-1,
+                                       keepdims=True)           # (H, W, 1)
+            half_vec = half_vec / np.maximum(half_dist, 1e-10)  # (H, W, 3)
+
+            # NdotH = max(dot(normals, half_vec), 0)
+            NdotH = np.sum(normals * half_vec, axis=-1)         # (H, W)
+            NdotH = np.maximum(NdotH, 0.0)                     # (H, W)
+
+            # Specular intensity: (NdotH ** shininess) * specular_coeff
+            spec_intensity = (NdotH ** shininess) * specular_coeff  # (H, W)
+            spec_intensity = np.where(visible, spec_intensity, 0.0)
+
+            # Specular uses LIGHT colour, not sphere colour (standard Blinn-Phong)
+            specular_contrib = (
+                light_color_01
+                * spec_intensity[..., np.newaxis]
+                * light_intensity
+            )                                                   # (H, W, 3)
+        else:
+            specular_contrib = 0.0
+
+        accumulated += diffuse_contrib + specular_contrib
 
     # ------------------------------------------------------------------
-    # 3. Final conversion: float [0, inf) -> uint8 [0, 255]
+    # 5. Final pixel colour: ambient + sum of light contributions
     #
     #    Matches the scalar:  min(255, int(c * 255))
     #    np.clip prevents uint8 overflow; .astype truncates like int().
     # ------------------------------------------------------------------
-    image = np.clip(accumulated * 255.0, 0.0, 255.0).astype(np.uint8)
+    final = ambient_color + accumulated
+    image = np.clip(final * 255.0, 0.0, 255.0).astype(np.uint8)
 
     return image
+
+
+def shade_diffuse(hit_points, normals, hit_sphere_idx, t_min, spheres, lights):
+    """Backward-compatible alias for shade_blinn_phong without specular.
+
+    Calls shade_blinn_phong with ray_origins=None, which disables the specular
+    term.  The ambient + diffuse result matches the Week 3 Lambertian shading
+    when spheres use the default material properties (ambient=0.1, diffuse=0.7).
+
+    .. note::
+        To get exact Week 3 parity (diffuse-only, no ambient), the sphere dicts
+        must have ambient=0.  With the default ambient=0.1, shadowed regions
+        will gain a faint ambient contribution.
+    """
+    return shade_blinn_phong(
+        hit_points, normals, hit_sphere_idx, t_min,
+        spheres, lights, ray_origins=None
+    )

@@ -6,7 +6,7 @@ from core.ray import Ray
 from core.sphere import Sphere
 from core.light import Light
 from core.intersection import intersect_spheres, sphere_to_dict
-from core.shading import shade_diffuse, light_to_dict
+from core.shading import shade_blinn_phong, light_to_dict
 #import math
 #import random
 
@@ -103,9 +103,10 @@ class DemoViewer:
             ray_origins, ray_dirs, sphere_dicts
         )
 
-        # --- Week 3: vectorized shading -----------------------------------
-        image = shade_diffuse(
-            hit_points, normals, idx, t_min, sphere_dicts, light_dicts
+        # --- Week 4: vectorized Blinn-Phong shading ------------------------
+        image = shade_blinn_phong(
+            hit_points, normals, idx, t_min,
+            sphere_dicts, light_dicts, ray_origins
         )
 
         # --- Blit to screen -----------------------------------------------

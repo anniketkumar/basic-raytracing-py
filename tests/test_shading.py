@@ -89,7 +89,8 @@ def test_single_light_no_shadows():
     ray_origins = np.array([[[0, 0, -10]]], dtype=np.float64)
     ray_dirs = np.array([[[0, 0, 1]]], dtype=np.float64)
 
-    sphere = {"center": np.array([0, 0, 5.0]), "radius": 1.0, "color": (255, 0, 0)}
+    sphere = {"center": np.array([0, 0, 5.0]), "radius": 1.0, "color": (255, 0, 0),
+              "ambient": 0.0, "diffuse": 1.0, "specular": 0.0, "shininess": 1}
     light = {"position": np.array([0, 0, -10.0]), "intensity": 1.0,
              "color": (255, 255, 255)}
 
@@ -131,10 +132,12 @@ def test_shadow_occlusion():
     ray_dirs = np.array([[[0, 0, 1]]], dtype=np.float64)
 
     sphere_a = {"center": np.array([0, 0, 5.0]), "radius": 1.0,
-                "color": (255, 0, 0)}
-    # Blocker is above sphere A — the primary ray (along Z) misses it
+                "color": (255, 0, 0),
+                "ambient": 0.0, "diffuse": 1.0, "specular": 0.0, "shininess": 1}
+    # Blocker is above sphere A -- the primary ray (along Z) misses it
     sphere_b = {"center": np.array([0, 3, 4.0]), "radius": 2.0,
-                "color": (0, 255, 0)}
+                "color": (0, 255, 0),
+                "ambient": 0.0, "diffuse": 1.0, "specular": 0.0, "shininess": 1}
     # Light is far above — shadow ray goes through B
     light = {"position": np.array([0, 100, 4.0]), "intensity": 1.0,
              "color": (255, 255, 255)}
@@ -174,7 +177,8 @@ def test_multiple_lights_accumulate():
     ray_dirs = np.array([[[0, 0, 1]]], dtype=np.float64)
 
     sphere = {"center": np.array([0, 0, 5.0]), "radius": 1.0,
-              "color": (255, 255, 255)}
+              "color": (255, 255, 255),
+              "ambient": 0.0, "diffuse": 1.0, "specular": 0.0, "shininess": 1}
     light_a = {"position": np.array([0, 0, -10.0]), "intensity": 0.5,
                "color": (255, 0, 0)}
     light_b = {"position": np.array([0, 0, -10.0]), "intensity": 0.5,
@@ -247,10 +251,15 @@ def test_parity_with_scalar():
         aspect_ratio=W / H,
     )
 
+    # Use ambient=0, diffuse=1, specular=0 to match the scalar trace()
+    # which has no material system.
     sphere_objs = [
-        Sphere(Vec3(0, 0, 50), 50, (255, 0, 0)),
-        Sphere(Vec3(80, 0, 100), 40, (0, 255, 0)),
-        Sphere(Vec3(-60, -30, 120), 30, (0, 0, 255)),
+        Sphere(Vec3(0, 0, 50), 50, (255, 0, 0),
+               ambient=0.0, diffuse=1.0, specular=0.0, shininess=1),
+        Sphere(Vec3(80, 0, 100), 40, (0, 255, 0),
+               ambient=0.0, diffuse=1.0, specular=0.0, shininess=1),
+        Sphere(Vec3(-60, -30, 120), 30, (0, 0, 255),
+               ambient=0.0, diffuse=1.0, specular=0.0, shininess=1),
     ]
 
     light_objs = [

@@ -1,9 +1,14 @@
 import math
 class Sphere():
-    def __init__(self, position, radius, color):
+    def __init__(self, position, radius, color,
+                 ambient=0.1, diffuse=0.7, specular=0.5, shininess=32):
         self.position = position
         self.radius = radius
         self.color = color
+        self.ambient = ambient      # Blinn-Phong ambient coefficient
+        self.diffuse = diffuse      # Blinn-Phong diffuse coefficient
+        self.specular = specular    # Blinn-Phong specular coefficient
+        self.shininess = shininess  # Specular exponent (higher = tighter highlight)
 
     def change_color(self, new_color):
         self.color = new_color
